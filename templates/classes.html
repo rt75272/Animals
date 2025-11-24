@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Species List - Animal Classifier</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-brand">
+                <i class="fas fa-paw"></i>
+                <span>Animal Classifier</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="/">Home</a></li>
+                <li><a href="/classes" class="active">Species List</a></li>
+                <li><a href="/about">About</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <div class="container main-content">
+        <h1><i class="fas fa-list"></i> Recognized Species</h1>
+        <p class="subtitle">Our model can identify {{ classes|length }} different animal species</p>
+
+        <div class="search-box">
+            <i class="fas fa-search"></i>
+            <input type="text" id="searchInput" placeholder="Search for a species..." onkeyup="filterClasses()">
+        </div>
+
+        <div class="classes-grid" id="classesGrid">
+            {% for animal in classes %}
+            <div class="class-card">
+                <div class="class-name">
+                    <strong>{{ animal.common }}</strong>
+                </div>
+                <div class="scientific-name">
+                    <i>{{ animal.scientific }}</i>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div id="noResults" style="display: none; text-align: center; padding: 40px;">
+            <i class="fas fa-search" style="font-size: 48px; color: #ccc; margin-bottom: 20px;"></i>
+            <p style="color: #666;">No species found matching your search.</p>
+        </div>
+    </div>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2025 Animal Classifier. Built with PyTorch and Flask.</p>
+        </div>
+    </footer>
+
+    <script>
+        function filterClasses() {
+            const input = document.getElementById('searchInput');
+            const filter = input.value.toLowerCase();
+            const grid = document.getElementById('classesGrid');
+            const cards = grid.getElementsByClassName('class-card');
+            const noResults = document.getElementById('noResults');
+            
+            let visibleCount = 0;
+            
+            for (let i = 0; i < cards.length; i++) {
+                const card = cards[i];
+                const text = card.textContent || card.innerText;
+                
+                if (text.toLowerCase().indexOf(filter) > -1) {
+                    card.style.display = '';
+                    visibleCount++;
+                } else {
+                    card.style.display = 'none';
+                }
+            }
+            
+            if (visibleCount === 0) {
+                grid.style.display = 'none';
+                noResults.style.display = 'block';
+            } else {
+                grid.style.display = 'grid';
+                noResults.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>

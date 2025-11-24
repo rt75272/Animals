@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Animal Classifier - AI-Powered Species Recognition</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-brand">
+                <i class="fas fa-paw"></i>
+                <span>Animal Classifier</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="/" class="active">Home</a></li>
+                <li><a href="/classes">Species List</a></li>
+                <li><a href="/about">About</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <div class="hero">
+        <div class="container">
+            <h1><i class="fas fa-robot"></i> AI-Powered Animal Recognition</h1>
+            <p class="subtitle">Upload an image to identify animal species using deep learning</p>
+        </div>
+    </div>
+
+    <div class="container main-content">
+        <div class="upload-section">
+            <div class="upload-box" id="uploadBox">
+                <i class="fas fa-cloud-upload-alt upload-icon"></i>
+                <h2>Upload an Image</h2>
+                <p>Drag & drop an image here or click to browse</p>
+                <input type="file" id="fileInput" accept="image/*" hidden>
+                <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">
+                    <i class="fas fa-folder-open"></i> Choose File
+                </button>
+            </div>
+
+            <div class="or-divider">
+                <span>OR</span>
+            </div>
+
+            <div class="url-input-section">
+                <h3><i class="fas fa-link"></i> Enter Image URL</h3>
+                <div class="input-group">
+                    <input type="text" id="imageUrl" placeholder="https://example.com/image.jpg" class="url-input">
+                    <button class="btn btn-secondary" onclick="predictFromUrl()">
+                        <i class="fas fa-search"></i> Analyze
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="results-section" id="resultsSection" style="display: none;">
+            <div class="image-preview">
+                <h3><i class="fas fa-image"></i> Uploaded Image</h3>
+                <img id="previewImage" src="" alt="Preview">
+            </div>
+
+            <div class="predictions">
+                <h3><i class="fas fa-chart-bar"></i> Predictions</h3>
+                <div class="loading" id="loading">
+                    <i class="fas fa-spinner fa-spin"></i> Analyzing image...
+                </div>
+                <div id="predictionsList" style="display: none;"></div>
+            </div>
+        </div>
+
+        <div class="error-message" id="errorMessage" style="display: none;">
+            <i class="fas fa-exclamation-circle"></i>
+            <span id="errorText"></span>
+        </div>
+
+        <div class="features">
+            <h2>Features</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <i class="fas fa-brain"></i>
+                    <h3>Deep Learning</h3>
+                    <p>Powered by ResNet-50 neural network trained on thousands of animal images</p>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-bolt"></i>
+                    <h3>Fast & Accurate</h3>
+                    <p>Get predictions in seconds with high accuracy across 150+ species</p>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-globe"></i>
+                    <h3>Wide Coverage</h3>
+                    <p>Recognizes mammals, birds, reptiles, fish, insects, and more</p>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-mobile-alt"></i>
+                    <h3>Easy to Use</h3>
+                    <p>Simple drag-and-drop interface works on any device</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2025 Animal Classifier. Built with PyTorch and Flask.</p>
+        </div>
+    </footer>
+
+    <script>
+        // File input handling
+        const fileInput = document.getElementById('fileInput');
+        const uploadBox = document.getElementById('uploadBox');
+        const resultsSection = document.getElementById('resultsSection');
+        const previewImage = document.getElementById('previewImage');
+        const loading = document.getElementById('loading');
+        const predictionsList = document.getElementById('predictionsList');
+        const errorMessage = document.getElementById('errorMessage');
+        const errorText = document.getElementById('errorText');
+
+        fileInput.addEventListener('change', handleFileSelect);
+
+        // Drag and drop
+        uploadBox.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadBox.classList.add('dragover');
+        });
+
+        uploadBox.addEventListener('dragleave', () => {
+            uploadBox.classList.remove('dragover');
+        });
+
+        uploadBox.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadBox.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFile(files[0]);
+            }
+        });
+
+        function handleFileSelect(e) {
+            const file = e.target.files[0];
+            if (file) {
+                handleFile(file);
+            }
+        }
+
+        function handleFile(file) {
+            // Validate file type
+            if (!file.type.startsWith('image/')) {
+                showError('Please upload an image file');
+                return;
+            }
+
+            // Show results section
+            resultsSection.style.display = 'block';
+            loading.style.display = 'block';
+            predictionsList.style.display = 'none';
+            errorMessage.style.display = 'none';
+
+            // Preview image
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                previewImage.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+
+            // Upload and predict
+            const formData = new FormData();
+            formData.append('file', file);
+
+            fetch('/predict', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    displayPredictions(data.predictions);
+                } else {
+                    showError(data.error || 'Prediction failed');
+                }
+            })
+            .catch(error => {
+                showError('Error: ' + error.message);
+            });
+        }
+
+        function predictFromUrl() {
+            const url = document.getElementById('imageUrl').value.trim();
+            if (!url) {
+                showError('Please enter an image URL');
+                return;
+            }
+
+            // Show results section
+            resultsSection.style.display = 'block';
+            loading.style.display = 'block';
+            predictionsList.style.display = 'none';
+            errorMessage.style.display = 'none';
+            previewImage.src = url;
+
+            fetch('/predict_url', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ url: url })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    displayPredictions(data.predictions);
+                } else {
+                    showError(data.error || 'Prediction failed');
+                }
+            })
+            .catch(error => {
+                showError('Error: ' + error.message);
+            });
+        }
+
+        function displayPredictions(predictions) {
+            loading.style.display = 'none';
+            predictionsList.style.display = 'block';
+
+            let html = '';
+            predictions.forEach((pred, index) => {
+                const percentage = pred.probability.toFixed(2);
+                const barWidth = pred.probability;
+                const rankClass = index === 0 ? 'top-prediction' : '';
+                
+                html += `
+                    <div class="prediction-item ${rankClass}">
+                        <div class="prediction-header">
+                            <span class="rank">#${index + 1}</span>
+                            <div class="prediction-names">
+                                <strong>${pred.common_name}</strong>
+                                <span class="scientific-name">${pred.scientific_name}</span>
+                            </div>
+                            <span class="percentage">${percentage}%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width: ${barWidth}%"></div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            predictionsList.innerHTML = html;
+        }
+
+        function showError(message) {
+            loading.style.display = 'none';
+            predictionsList.style.display = 'none';
+            errorMessage.style.display = 'block';
+            errorText.textContent = message;
+        }
+    </script>
+</body>
+</html>

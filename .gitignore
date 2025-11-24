@@ -1,0 +1,50 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+animals/
+venv/
+env/
+ENV/
+
+# Model files
+models/*.pth
+models/*.pt
+*.pth
+*.pt
+
+# Uploaded images
+static/uploads/*
+!static/uploads/.gitkeep
+
+# Dataset (keep original data, ignore processed)
+data/dataset/
+data/*
+# Training outputs
+*.log
+training_logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Flask
+instance/
+.webassets-cache
