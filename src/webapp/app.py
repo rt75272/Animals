@@ -7,17 +7,36 @@ import json
 import torch
 import torch.nn as nn
 from torchvision import transforms, models
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from flask import Flask, render_template, request, jsonify, url_for
 from werkzeug.utils import secure_filename
 import base64
 from io import BytesIO
+import requests
 
-app = Flask(__name__)
+import sys
+from pathlib import Path
+
+# Add root directory to sys.path to allow imports from config and src
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+
+from config import paths, params
+from src.training.train import AnimalClassifier
+
+# Load class names and mappings
+with open(paths.CLASSES_JSON_PATH, 'r') as f:
+    idx_to_class = json.load(f)
+    idx_to_class = {int(k): v for k, v in idx_to_class.items()}
+
+with open(paths.CLASS_NAMES_PATH, 'r') as f:
+    class_name_map = json.load(f)
+
+# Initialize the application
+app = Flask(__name__, static_folder='static', template_folder='templates')
 # Set maximum file upload size to 16MB.
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 # Directory to store uploaded images.
-app.config['UPLOAD_FOLDER'] = 'static/uploads'
+app.config['UPLOAD_FOLDER'] = str(paths.UPLOAD_DIR)
 # Allowed file extensions for image uploads.
 app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif'}
 # Global variables for model and classes.
@@ -38,7 +57,8 @@ def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
-def load_model(model_path='models/best_model.pth', class_mapping_path='models/class_mapping.json'):
+def load_model(model_path=paths.MODELS_DIR / 'best_model_finetuned.pth', 
+               class_mapping_path=paths.MODELS_DIR / 'class_mapping.json'):
     """Load the trained model and class mappings.
 
     Args:
@@ -54,32 +74,18 @@ def load_model(model_path='models/best_model.pth', class_mapping_path='models/cl
         class_names = mapping['class_to_idx']
         idx_to_class = {int(k): v for k, v in mapping['idx_to_class'].items()}
     num_classes = len(class_names)
-    # Initialize ResNet50 model architecture.
-    model = models.resnet50(pretrained=False)
-    num_features = model.fc.in_features
-    # Replace final layer to match training architecture with enhanced classifier.
-    model.fc = nn.Sequential(
-        nn.Linear(num_features, 512),
-        nn.ReLU(),
-        nn.BatchNorm1d(512),
-        nn.Dropout(0.5),
-        nn.Linear(512, 256),
-        nn.ReLU(),
-        nn.BatchNorm1d(256),
-        nn.Dropout(0.4),
-        nn.Linear(256, num_classes)
-    )
-    # Load trained weights from checkpoint.
-    checkpoint = torch.load(model_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model = model.to(device)
-    # Set model to evaluation mode.
+    
+    # Initialize model using the AnimalClassifier class
+    classifier = AnimalClassifier(num_classes, model_name=params.MODEL_NAME, pretrained=False, freeze_layers=False)
+    classifier.load_checkpoint(model_path)
+    model = classifier.model
     model.eval()
+    
     print(f"Model loaded successfully from {model_path}")
     print(f"Number of classes: {num_classes}")
     print(f"Device: {device}")
 
-def load_translation(translation_path='data/translation.json'):
+def load_translation(translation_path=paths.TRANSLATION_FILE):
     """Load the translation from scientific to common names.
 
     Args:
@@ -122,11 +128,12 @@ def get_tta_transforms(num_crops=5):
         transforms_list.append(transforms.Compose(base))
     return transforms_list
 
-def predict_image(image_path, top_k=5, use_tta=True, tta_crops=5):
-    """Make prediction on an image with optional test-time augmentation.
+def get_predictions_from_image(image, top_k=params.TOP_K, use_tta=params.USE_TTA, tta_crops=params.TTA_CROPS):
+    """
+    Core prediction function that takes a PIL Image object.
 
     Args:
-        image_path: Path to the image file.
+        image: A PIL Image object.
         top_k: Number of top predictions to return.
         use_tta: Whether to apply test-time augmentation.
         tta_crops: Number of augmented crops to average.
@@ -135,8 +142,10 @@ def predict_image(image_path, top_k=5, use_tta=True, tta_crops=5):
     """
     if model is None:
         raise ValueError("Model not loaded. Call load_model() first.")
-    image = Image.open(image_path).convert('RGB')
-    # Prepare tensors for either single-crop or TTA inference.
+    
+    # Ensure image is RGB
+    image = image.convert('RGB')
+
     with torch.no_grad():
         if use_tta and tta_crops > 1:
             transforms_list = get_tta_transforms(num_crops=tta_crops)
@@ -153,20 +162,40 @@ def predict_image(image_path, top_k=5, use_tta=True, tta_crops=5):
             transform = get_transform()
             tensor = transform(image).unsqueeze(0).to(device)
             outputs = model(tensor)
+        
         probabilities = torch.nn.functional.softmax(outputs, dim=1)
         top_probs, top_indices = torch.topk(probabilities, top_k)
-    # Format results with scientific and common names.
+
     results = []
     for prob, idx in zip(top_probs[0], top_indices[0]):
         class_name = idx_to_class[idx.item()]
-        common_name = translation.get(class_name, class_name.replace('-', ' ').title())
-        probability = prob.item() * 100
+        scientific_name = class_name_map.get(class_name, {}).get('scientific', 'Unknown')
+        common_name = class_name_map.get(class_name, {}).get('common', 'Unknown')
         results.append({
-            'scientific_name': class_name,
+            'class_name': class_name,
+            'scientific_name': scientific_name,
             'common_name': common_name,
-            'probability': probability
+            'probability': prob.item() * 100
         })
     return results
+
+def predict_image(image_path, top_k=params.TOP_K, use_tta=params.USE_TTA, tta_crops=params.TTA_CROPS):
+    """Make prediction on an image from a file path.
+
+    Args:
+        image_path: Path to the image file.
+        top_k: Number of top predictions to return.
+        use_tta: Whether to apply test-time augmentation.
+        tta_crops: Number of augmented crops to average.
+    Returns:
+        List of dictionaries with class names and probabilities.
+    """
+    try:
+        image = Image.open(image_path)
+        return get_predictions_from_image(image, top_k, use_tta, tta_crops)
+    except Exception as e:
+        app.logger.error(f"Error opening or processing image at {image_path}: {e}", exc_info=True)
+        raise
 
 @app.route('/')
 def index():
@@ -177,43 +206,51 @@ def index():
     """
     return render_template('index.html')
 
+import logging
+logging.basicConfig(level=logging.INFO)
+
 @app.route('/predict', methods=['POST'])
 def predict():
-    """Handle image upload and prediction.
-
-    Returns:
-        JSON response with predictions or error message.
-    """
+    """Handles image upload and prediction by reading the file stream."""
+    app.logger.info("Received a request to /predict")
     if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'}), 400
+        app.logger.error("No file part in the request")
+        return jsonify({'error': 'No file part in the request'}), 400
+    
     file = request.files['file']
+
     if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
-    if not allowed_file(file.filename):
-        return jsonify({'error': 'Invalid file type. Please upload an image (PNG, JPG, JPEG, GIF)'}), 400
-    try:
-        # Create upload directory if it doesn't exist.
-        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-        # Sanitize filename for security.
-        filename = secure_filename(file.filename)
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
-        # Make prediction on uploaded image.
-        predictions = predict_image(filepath, top_k=5)
-        # Generate URL for uploaded image.
-        image_url = url_for('static', filename=f'uploads/{filename}')
-        return jsonify({
-            'success': True,
-            'image_url': image_url,
-            'predictions': predictions
-        })
-    except Exception as e:
-        return jsonify({'error': f'Prediction failed: {str(e)}'}), 500
+        app.logger.error("No selected file")
+        return jsonify({'error': 'No selected file'}), 400
+
+    if file:
+        try:
+            app.logger.info(f"Processing image stream for file: {file.filename}")
+            
+            # Read image directly from the stream
+            image = Image.open(file.stream)
+            
+            app.logger.info("Starting prediction from stream...")
+            predictions = get_predictions_from_image(image)
+            app.logger.info(f"Prediction successful. Top prediction: {predictions[0]['class_name']}")
+            
+            response_data = {'predictions': predictions}
+            app.logger.info(f"Sending response: {response_data}")
+            return jsonify(response_data)
+        except UnidentifiedImageError:
+            app.logger.error(f"Cannot identify image file: {file.filename}. The file may be corrupt or not a valid image.")
+            return jsonify({'error': 'Cannot identify image file. It may be corrupt or not a supported format.'}), 400
+        except Exception as e:
+            app.logger.error(f"An error occurred during prediction from stream: {e}", exc_info=True)
+            return jsonify({'error': f'An error occurred: {str(e)}'}), 500
+            
+    app.logger.error("File object was not valid")
+    return jsonify({'error': 'An unexpected error occurred with the file upload.'}), 500
+
 
 @app.route('/predict_url', methods=['POST'])
 def predict_url():
     """Handle image URL prediction.
-
     Returns:
         JSON response with predictions or error message.
     """
@@ -222,23 +259,45 @@ def predict_url():
         image_url = data.get('url')
         if not image_url:
             return jsonify({'error': 'No URL provided'}), 400
-        # Download image from URL and save locally.
-        import urllib.request
-        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+        # Use requests to get the image from the URL
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'}
+        response = requests.get(image_url, headers=headers, stream=True, timeout=10)
+        
+        # Check for successful request and content type
+        if response.status_code != 200:
+            return jsonify({'error': f'Failed to download image. Status code: {response.status_code}'}), 400
+        
+        content_type = response.headers.get('content-type')
+        if not content_type or not content_type.startswith('image/'):
+            return jsonify({'error': 'The provided URL does not point to a valid image file.'}), 400
+
+        # Ensure the uploads directory exists
+        upload_dir = Path(app.config['UPLOAD_FOLDER'])
+        upload_dir.mkdir(exist_ok=True)
+        
+        # Save the valid image
         filename = 'url_image.jpg'
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        urllib.request.urlretrieve(image_url, filepath)
-        # Make prediction on downloaded image.
-        predictions = predict_image(filepath, top_k=5)
-        # Generate URL for saved image.
+        filepath = upload_dir / filename
+        with open(filepath, 'wb') as f:
+            f.write(response.content)
+
+        # Make prediction on the downloaded image
+        predictions = predict_image(filepath, top_k=params.TOP_K)
+        
+        # Generate URL for the saved image to display on the frontend
         saved_image_url = url_for('static', filename=f'uploads/{filename}')
+        
         return jsonify({
             'success': True,
             'image_url': saved_image_url,
             'predictions': predictions
         })
+    except requests.exceptions.RequestException as e:
+        return jsonify({'error': f'Failed to download image: {str(e)}'}), 500
     except Exception as e:
         return jsonify({'error': f'Prediction failed: {str(e)}'}), 500
+
 
 @app.route('/about')
 def about():
@@ -275,15 +334,22 @@ def initialize_app():
         Boolean indicating successful initialization.
     """
     print("Initializing Animal Classifier Web App...")
-    # Check if trained model exists.
-    model_path = 'models/best_model.pth'
-    if not os.path.exists(model_path):
-        print(f"Warning: Model not found at {model_path}")
-        print("Please train the model first by running: python train_model.py")
+    # Check if a fine-tuned model exists, otherwise fall back to the base model.
+    finetuned_model_path = paths.MODELS_DIR / 'best_model_finetuned.pth'
+    base_model_path = paths.MODELS_DIR / 'best_model.pth'
+    
+    if finetuned_model_path.exists():
+        model_path_to_load = finetuned_model_path
+    elif base_model_path.exists():
+        model_path_to_load = base_model_path
+    else:
+        print(f"Warning: No trained model found.")
+        print(f"Please train the model first by running: python run.py train")
         return False
+        
     # Load model and translations.
     try:
-        load_model()
+        load_model(model_path=model_path_to_load)
         load_translation()
         print("Application initialized successfully!")
         return True

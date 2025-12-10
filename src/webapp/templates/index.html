@@ -224,33 +224,39 @@
         }
 
         function displayPredictions(predictions) {
-            loading.style.display = 'none';
-            predictionsList.style.display = 'block';
+            predictionsList.innerHTML = '';
+            // Ensure predictions is an array before trying to iterate
+            if (predictions && Array.isArray(predictions)) {
+                predictions.forEach(p => {
+                    const item = document.createElement('div');
+                    item.className = 'prediction-item';
 
-            let html = '';
-            predictions.forEach((pred, index) => {
-                const percentage = pred.probability.toFixed(2);
-                const barWidth = pred.probability;
-                const rankClass = index === 0 ? 'top-prediction' : '';
-                
-                html += `
-                    <div class="prediction-item ${rankClass}">
-                        <div class="prediction-header">
-                            <span class="rank">#${index + 1}</span>
-                            <div class="prediction-names">
-                                <strong>${pred.common_name}</strong>
-                                <span class="scientific-name">${pred.scientific_name}</span>
-                            </div>
-                            <span class="percentage">${percentage}%</span>
-                        </div>
-                        <div class="progress-bar">
-                            <div class="progress-fill" style="width: ${barWidth}%"></div>
-                        </div>
-                    </div>
-                `;
-            });
+                    const name = document.createElement('span');
+                    name.className = 'prediction-name';
+                    name.textContent = p.class_name.replace(/_/g, ' ');
 
-            predictionsList.innerHTML = html;
+                    const barContainer = document.createElement('div');
+                    barContainer.className = 'prediction-bar-container';
+                    const bar = document.createElement('div');
+                    bar.className = 'prediction-bar';
+                    bar.style.width = `${p.probability}%`;
+                    barContainer.appendChild(bar);
+
+                    const probability = document.createElement('span');
+                    probability.className = 'prediction-probability';
+                    probability.textContent = `${p.probability.toFixed(2)}%`;
+
+                    item.appendChild(name);
+                    item.appendChild(barContainer);
+                    item.appendChild(probability);
+                    predictionsList.appendChild(item);
+                });
+                predictionsList.style.display = 'block';
+            } else {
+                // Handle cases where predictions are not in the expected format
+                showError('Received an invalid format for predictions.');
+                console.error('Invalid predictions format:', predictions);
+            }
         }
 
         function showError(message) {

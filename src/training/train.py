@@ -12,7 +12,14 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms, models
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from datetime import datetime
+import sys
+from pathlib import Path
+
+# Add root directory to sys.path to allow imports from config
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+
+from config import paths, params
+
 
 class AnimalClassifier:
     def __init__(self, num_classes, model_name='resnet50', pretrained=True, freeze_layers=True):
@@ -29,10 +36,10 @@ class AnimalClassifier:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         # Load pretrained model based on specified architecture.
         if model_name == 'resnet18':
-            self.model = models.resnet18(pretrained=pretrained)
+            self.model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT if pretrained else None)
             num_features = self.model.fc.in_features
         elif model_name == 'resnet50':
-            self.model = models.resnet50(pretrained=pretrained)
+            self.model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT if pretrained else None)
             num_features = self.model.fc.in_features
         else:
             raise ValueError(f"Unknown model: {model_name}")
@@ -261,16 +268,16 @@ class LabelSmoothingCrossEntropy(nn.Module):
         loss = -(one_hot * log_prob).sum(dim=1).mean()
         return loss
 
-def train_model(data_dir='data/dataset',
-                model_name='resnet50',
-                num_epochs=100,
-                batch_size=64,
-                learning_rate=0.0003,
-                save_dir='models',
-                finetune=False,
-                finetune_layers=('layer3',),
-                finetune_epochs=15,
-                finetune_lr_factor=0.1):
+def train_model(data_dir=paths.PROCESSED_DATA_DIR,
+                model_name=params.MODEL_NAME,
+                num_epochs=params.NUM_EPOCHS,
+                batch_size=params.BATCH_SIZE,
+                learning_rate=params.LEARNING_RATE,
+                save_dir=paths.MODELS_DIR,
+                finetune=params.FINETUNE,
+                finetune_layers=params.FINETUNE_LAYERS,
+                finetune_epochs=params.FINETUNE_EPOCHS,
+                finetune_lr_factor=params.FINETUNE_LR_FACTOR):
     """Main training function with improved training strategy.
 
     Args:
@@ -286,22 +293,28 @@ def train_model(data_dir='data/dataset',
         finetune_lr_factor: Factor to reduce learning rate during fine-tuning.
     """
     # Create directory to save model checkpoints.
-    os.makedirs(save_dir, exist_ok=True)
-    # Load class information from prepared dataset.
-    class_info_path = os.path.join(data_dir, 'class_info.json')
-    with open(class_info_path, 'r') as f:
-        class_info = json.load(f)
-    num_classes = len(class_info)
-    # Get data transforms with augmentation strategies.
+    save_dir.mkdir(exist_ok=True)
+    
+    train_dir = data_dir / 'train'
+    train_dataset = datasets.ImageFolder(train_dir)
+    num_classes = len(train_dataset.classes)
+
+    # Save class-to-index mapping for later use in inference.
+    idx_to_class = {v: k for k, v in train_dataset.class_to_idx.items()}
+    class_map_path = save_dir / 'idx_to_class.json'
+    with open(class_map_path, 'w') as f:
+        json.dump(idx_to_class, f, indent=4)
+    print(f"Class mapping saved to {class_map_path}")
+
+    # Get data transforms
     train_transform, val_transform = get_data_transforms()
-    # Load training dataset with augmentation.
-    train_dataset = datasets.ImageFolder(
-        os.path.join(data_dir, 'train'),
-        transform=train_transform
-    )
+    
+    # Set transforms for datasets
+    train_dataset.transform = train_transform
+
     # Load validation dataset without augmentation.
     val_dataset = datasets.ImageFolder(
-        os.path.join(data_dir, 'val'),
+        data_dir / 'val',
         transform=val_transform
     )
     # Create data loaders for batch processing with larger batch size.
@@ -327,25 +340,15 @@ def train_model(data_dir='data/dataset',
     print(f"Number of classes: {num_classes}")
     print(f"Batch size: {batch_size}")
     print(f"Steps per epoch: {len(train_loader)}")
-    # Save class to index mapping for inference.
-    class_to_idx = train_dataset.class_to_idx
-    idx_to_class = {v: k for k, v in class_to_idx.items()}
-    mapping_path = os.path.join(save_dir, 'class_mapping.json')
-    with open(mapping_path, 'w') as f:
-        json.dump({
-            'class_to_idx': class_to_idx,
-            'idx_to_class': idx_to_class
-        }, f, indent=2)
-    print(f"Class mapping saved to {mapping_path}")
     # Initialize model with pretrained weights and frozen early layers.
     classifier = AnimalClassifier(num_classes, model_name=model_name, freeze_layers=True)
     # Use label smoothing with reduced smoothing factor.
-    criterion = LabelSmoothingCrossEntropy(smoothing=0.05)
+    criterion = LabelSmoothingCrossEntropy(smoothing=params.LABEL_SMOOTHING)
     # Use AdamW optimizer with lower learning rate and weight decay.
     optimizer = optim.AdamW(
         filter(lambda p: p.requires_grad, classifier.model.parameters()),
         lr=learning_rate,
-        weight_decay=0.02,
+        weight_decay=params.WEIGHT_DECAY,
         betas=(0.9, 0.999)
     )
     # OneCycleLR scheduler for better convergence and accuracy.
@@ -370,9 +373,9 @@ def train_model(data_dir='data/dataset',
     # Training loop for specified number of epochs with early stopping.
     print(f"\nStarting training for {num_epochs} epochs...")
     print("="*60)
-    patience = 15
+    patience = params.PATIENCE
     patience_counter = 0
-    min_delta = 0.01
+    min_delta = params.MIN_DELTA
     for epoch in range(num_epochs):
         print(f"\nEpoch {epoch+1}/{num_epochs}")
         # Train for one epoch with scheduler stepping per batch.
@@ -395,7 +398,7 @@ def train_model(data_dir='data/dataset',
         if val_acc > best_val_acc + min_delta:
             best_val_acc = val_acc
             patience_counter = 0
-            best_model_path = os.path.join(save_dir, 'best_model.pth')
+            best_model_path = save_dir / 'best_model.pth'
             classifier.save_checkpoint(
                 best_model_path, epoch, optimizer, train_acc, val_acc
             )
@@ -410,12 +413,12 @@ def train_model(data_dir='data/dataset',
             break
         # Save periodic checkpoints for recovery.
         if (epoch + 1) % 10 == 0:
-            checkpoint_path = os.path.join(save_dir, f'checkpoint_epoch_{epoch+1}.pth')
+            checkpoint_path = save_dir / f'checkpoint_epoch_{epoch+1}.pth'
             classifier.save_checkpoint(
                 checkpoint_path, epoch, optimizer, train_acc, val_acc
             )
     # Save final model after initial training completes.
-    final_model_path = os.path.join(save_dir, 'final_model.pth')
+    final_model_path = save_dir / 'final_model.pth'
     classifier.save_checkpoint(
         final_model_path, num_epochs-1, optimizer,
         history['train_acc'][-1], history['val_acc'][-1]
@@ -462,7 +465,7 @@ def train_model(data_dir='data/dataset',
             if val_acc > best_val_acc + min_delta:
                 best_val_acc = val_acc
                 patience_counter = 0
-                best_model_path = os.path.join(save_dir, 'best_model_finetuned.pth')
+                best_model_path = save_dir / 'best_model_finetuned.pth'
                 classifier.save_checkpoint(
                     best_model_path,
                     ft_epoch,
@@ -479,11 +482,11 @@ def train_model(data_dir='data/dataset',
                 print(f"Best validation accuracy after fine-tuning: {best_val_acc:.2f}%")
                 break
     # Save training history as JSON for later analysis.
-    history_path = os.path.join(save_dir, 'training_history.json')
+    history_path = save_dir / 'training_history.json'
     with open(history_path, 'w') as f:
         json.dump(history, f, indent=2)
     # Generate and save training visualization plots.
-    plot_training_history(history, os.path.join(save_dir, 'training_history.png'))
+    plot_training_history(history, save_dir / 'training_history.png')
     print("\n" + "="*60)
     print("Training Complete!")
     print("="*60)
@@ -491,15 +494,4 @@ def train_model(data_dir='data/dataset',
     print(f"Models saved to: {save_dir}")
 
 if __name__ == "__main__":
-    train_model(
-        data_dir='data/dataset',
-        model_name='resnet50',
-        num_epochs=100,
-        batch_size=64,
-        learning_rate=0.0003,
-        save_dir='models',
-        finetune=True,
-        finetune_layers=('layer3',),
-        finetune_epochs=15,
-        finetune_lr_factor=0.1
-    )
+    train_model()
