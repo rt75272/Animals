@@ -2,16 +2,11 @@
 
 User-friendly interface for uploading images and getting predictions.
 """
-import os
 import json
 import torch
-import torch.nn as nn
-from torchvision import transforms, models
+from torchvision import transforms
 from PIL import Image, UnidentifiedImageError
 from flask import Flask, render_template, request, jsonify, url_for
-from werkzeug.utils import secure_filename
-import base64
-from io import BytesIO
 import requests
 
 import sys
@@ -22,14 +17,6 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from config import paths, params
 from src.training.train import AnimalClassifier
-
-# Load class names and mappings
-with open(paths.CLASSES_JSON_PATH, 'r') as f:
-    idx_to_class = json.load(f)
-    idx_to_class = {int(k): v for k, v in idx_to_class.items()}
-
-with open(paths.CLASS_NAMES_PATH, 'r') as f:
-    class_name_map = json.load(f)
 
 # Initialize the application
 app = Flask(__name__, static_folder='static', template_folder='templates')
@@ -42,9 +29,12 @@ app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif'}
 # Global variables for model and classes.
 model = None
 device = None
-class_names = {}
-idx_to_class = {}
-translation = {}
+# class_to_idx (string -> int)
+class_names: dict[str, int] = {}
+# idx_to_class (int -> string)
+idx_to_class: dict[int, str] = {}
+# scientific/class-folder-name -> common name (optional)
+translation: dict[str, str] = {}
 
 def allowed_file(filename):
     """Check if file extension is allowed.
@@ -57,8 +47,18 @@ def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
-def load_model(model_path=paths.MODELS_DIR / 'best_model_finetuned.pth', 
-               class_mapping_path=paths.MODELS_DIR / 'class_mapping.json'):
+def _load_idx_to_class(mapping_path: Path) -> dict[int, str]:
+    with open(mapping_path, 'r') as f:
+        raw = json.load(f)
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid mapping format in {mapping_path}")
+    return {int(k): v for k, v in raw.items()}
+
+
+def load_model(
+    model_path: Path,
+    idx_to_class_path: Path = paths.CLASSES_JSON_PATH,
+):
     """Load the trained model and class mappings.
 
     Args:
@@ -66,21 +66,35 @@ def load_model(model_path=paths.MODELS_DIR / 'best_model_finetuned.pth',
         class_mapping_path: Path to class mapping JSON file.
     """
     global model, device, class_names, idx_to_class
-    # Determine compute device (GPU or CPU).
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    # Load class mapping from JSON file.
-    with open(class_mapping_path, 'r') as f:
-        mapping = json.load(f)
-        class_names = mapping['class_to_idx']
-        idx_to_class = {int(k): v for k, v in mapping['idx_to_class'].items()}
-    num_classes = len(class_names)
-    
-    # Initialize model using the AnimalClassifier class
-    classifier = AnimalClassifier(num_classes, model_name=params.MODEL_NAME, pretrained=False, freeze_layers=False)
-    classifier.load_checkpoint(model_path)
+
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
+    if not idx_to_class_path.exists():
+        raise FileNotFoundError(
+            f"Class mapping not found: {idx_to_class_path}. "
+            "Run training first to generate models/idx_to_class.json"
+        )
+
+    # Load mapping produced by training.
+    idx_to_class = _load_idx_to_class(idx_to_class_path)
+    class_names = {class_name: int(index) for index, class_name in idx_to_class.items()}
+
+    # Read num_classes from checkpoint if present, otherwise from mapping.
+    checkpoint = torch.load(model_path, map_location='cpu')
+    checkpoint_num_classes = checkpoint.get('num_classes') if isinstance(checkpoint, dict) else None
+    num_classes = int(checkpoint_num_classes) if checkpoint_num_classes else len(idx_to_class)
+
+    classifier = AnimalClassifier(
+        num_classes,
+        model_name=params.MODEL_NAME,
+        pretrained=False,
+        freeze_layers=False,
+    )
+    classifier.model.load_state_dict(checkpoint['model_state_dict'])
     model = classifier.model
+    device = classifier.device
     model.eval()
-    
+
     print(f"Model loaded successfully from {model_path}")
     print(f"Number of classes: {num_classes}")
     print(f"Device: {device}")
@@ -92,8 +106,12 @@ def load_translation(translation_path=paths.TRANSLATION_FILE):
         translation_path: Path to translation JSON file.
     """
     global translation
+    if not translation_path.exists():
+        translation = {}
+        return
     with open(translation_path, 'r') as f:
-        translation = json.load(f)
+        data = json.load(f)
+    translation = data if isinstance(data, dict) else {}
 
 def get_transform():
     """Get base image preprocessing transform for a single crop.
@@ -169,8 +187,11 @@ def get_predictions_from_image(image, top_k=params.TOP_K, use_tta=params.USE_TTA
     results = []
     for prob, idx in zip(top_probs[0], top_indices[0]):
         class_name = idx_to_class[idx.item()]
-        scientific_name = class_name_map.get(class_name, {}).get('scientific', 'Unknown')
-        common_name = class_name_map.get(class_name, {}).get('common', 'Unknown')
+        scientific_name = class_name
+        common_name = translation.get(
+            class_name,
+            class_name.replace('-', ' ').replace('_', ' ').title(),
+        )
         results.append({
             'class_name': class_name,
             'scientific_name': scientific_name,
@@ -344,12 +365,13 @@ def initialize_app():
         model_path_to_load = base_model_path
     else:
         print(f"Warning: No trained model found.")
-        print(f"Please train the model first by running: python run.py train")
+        print("Please train the model first by running: python app.py train")
+        print("(or: python run.py train)")
         return False
         
     # Load model and translations.
     try:
-        load_model(model_path=model_path_to_load)
+        load_model(model_path=model_path_to_load, idx_to_class_path=paths.CLASSES_JSON_PATH)
         load_translation()
         print("Application initialized successfully!")
         return True
