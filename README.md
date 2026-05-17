@@ -36,7 +36,7 @@ Animals/
 ├── prepare_data.py           # Data preparation script
 ├── train_model.py            # Model training script
 ├── app.py                    # Flask web application
-└── requirements.txt          # Python dependencies
+- `pyproject.toml`         # Project metadata and dependencies
 ```
 
 ## 🚀 Quick Start
@@ -44,7 +44,7 @@ Animals/
 ### Prerequisites
 
 - Python 3.8 or higher
-- pip package manager
+- [uv](https://docs.astral.sh/uv/) package manager
 - 4GB+ RAM (8GB+ recommended for training)
 - GPU optional (significantly speeds up training)
 
@@ -57,7 +57,7 @@ Animals/
 
 2. **Install dependencies**
    ```bash
-   pip install -r requirements.txt
+   uv sync
    ```
 
 ### Usage
@@ -67,7 +67,7 @@ Animals/
 Organize images into train/validation/test splits:
 
 ```bash
-python prepare_data.py
+uv run python app.py prepare
 ```
 
 This will:
@@ -80,7 +80,7 @@ This will:
 Train the deep learning model:
 
 ```bash
-python train_model.py
+uv run python app.py train
 ```
 
 Training parameters (can be modified in the script):
@@ -103,7 +103,7 @@ Training will:
 Start the Flask server:
 
 ```bash
-python app.py
+uv run python app.py
 ```
 
 Open your browser and navigate to:
@@ -219,7 +219,7 @@ RuntimeError: CUDA out of memory
 ```
 ModuleNotFoundError: No module named 'torch'
 ```
-**Solution**: Install dependencies with `pip install -r requirements.txt`
+**Solution**: Install dependencies with `uv sync`
 
 ### Flask port already in use
 ```
