@@ -4,10 +4,14 @@ __pycache__/
 *$py.class
 
 # Virtual environment
+.venv/
 animals/
 venv/
 env/
 ENV/
+
+# uv
+uv.lock
 
 # Model files
 models/*.pth
